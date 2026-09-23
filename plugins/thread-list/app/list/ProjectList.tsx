@@ -716,6 +716,7 @@ function ProjectModeSections({
       id: "threads",
       title: "Threads",
       threads: personalThreads,
+      onNewThread: () => onCreateProjectThread(PERSONAL_PROJECT_ID),
       renderContent: (close: () => void) => (
         <ProjectThreadTree
           projectId={PERSONAL_PROJECT_ID}
@@ -745,6 +746,7 @@ function ProjectModeSections({
         id,
         title: row.project.name,
         threads: getProjectThreadItemDescendants(items),
+        onNewThread: () => onCreateProjectThread(row.project.id),
         renderContent: (close: () => void) => (
           <ProjectThreadTree
             projectId={row.project.id}
@@ -773,6 +775,7 @@ function ProjectModeSections({
       order={persistedOrder}
       onOrderChange={onOrderChange}
       label="Projects"
+      selectedThreadId={selectedThreadId}
     >
       <ReorderableSidebarSectionOrderList order={order} threadDnd={threadDnd}>
         {(sectionId, consumeClickSuppression) => {
@@ -831,6 +834,7 @@ interface SectionModeSectionsProps extends BuiltInSectionRenderState {
   collapsedThreadIds: Set<string>;
   compareThreads: ThreadComparator;
   sections: readonly SidebarSectionDefinition[];
+  onCreateThread: () => void;
   onCreateThreadInSection: (sectionId: string) => void;
   onProjectSelect?: () => void;
   onRemoveSection: (section: SidebarSectionDefinition) => void;
@@ -857,6 +861,7 @@ function SectionModeSections({
   compareThreads,
   effectivePinnedThreadIds,
   sections,
+  onCreateThread,
   onCreateThreadInSection,
   onProjectSelect,
   onRemoveSection,
@@ -904,6 +909,7 @@ function SectionModeSections({
       collapsedThreadIds={collapsedThreadIds}
       collapsedEnvironmentIds={collapsedEnvironmentIds}
       onProjectSelect={onProjectSelect}
+      onCreateThread={onCreateThread}
       onCreateThreadInSection={onCreateThreadInSection}
       onRemoveSection={onRemoveSection}
       onToggleThreadCollapsed={onToggleThreadCollapsed}
@@ -932,6 +938,7 @@ interface MachineModeSectionsProps
   compareThreads: ThreadComparator;
   draftThreadIds: ReadonlySet<string>;
   effectivePinnedThreadIds: ReadonlySet<string>;
+  onCreateThread?: () => void;
   onProjectSelect?: () => void;
   onToggleEnvironmentCollapsed: ToggleCollapsedId;
   onToggleThreadCollapsed: ToggleCollapsedId;
@@ -994,6 +1001,7 @@ export function MachineModeSections({
   draftThreadIds,
   effectivePinnedThreadIds,
   isSectionDisplayOptionsOpen,
+  onCreateThread,
   onProjectSelect,
   onToggleCollapsed,
   onToggleEnvironmentCollapsed,
@@ -1174,6 +1182,7 @@ export function MachineModeSections({
       id: "threads",
       title: "Threads",
       threads: nonPinnedThreads,
+      onNewThread: onCreateThread,
       renderContent: (close: () => void) => (
         <ProjectThreadTree
           dndParentKey={CHRONOLOGICAL_CONTAINER_ID}
@@ -1227,6 +1236,7 @@ export function MachineModeSections({
       order={persistedOrder}
       onOrderChange={onOrderChange}
       label="Machines"
+      selectedThreadId={selectedThreadId}
     >
       <ReorderableSidebarSectionOrderList order={order} threadDnd={threadDnd}>
         {(sectionId, consumeClickSuppression) => {
@@ -1703,6 +1713,7 @@ function ProjectListComponent({
               compareThreads={sidebarThreadComparator}
               renderSectionDisplayOptions={renderSectionDisplayOptions}
               isSectionDisplayOptionsOpen={isSectionDisplayOptionsOpen}
+              onCreateThread={handleCreateProjectlessThread}
               onProjectSelect={onProjectSelect}
               onToggleCollapsed={toggleSidebarSectionCollapsed}
               onToggleThreadCollapsed={toggleThreadCollapsed}
@@ -1730,6 +1741,7 @@ function ProjectListComponent({
               collapsedEnvironmentIds={collapsedEnvironmentIds}
               compareThreads={sidebarThreadComparator}
               onProjectSelect={onProjectSelect}
+              onCreateThread={handleCreateProjectlessThread}
               onCreateThreadInSection={handleCreateThreadInSection}
               onRemoveSection={handleRemoveThreadSection}
               onToggleCollapsed={toggleSidebarSectionCollapsed}
