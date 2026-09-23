@@ -20,7 +20,10 @@ import {
   type UniqueIdentifier,
 } from "@dnd-kit/core";
 import type { SidebarThread } from "../model/sidebar-thread.js";
-import { useSdk } from "@get-bb/plugin-sdk/app";
+import {
+  experimental_useSidebarThreadActions,
+  useSdk,
+} from "@get-bb/plugin-sdk/app";
 import type { NeighborReorderRequest } from "../model/neighbor-reorder.js";
 import {
   getSidebarDndItemId,
@@ -49,10 +52,10 @@ import {
 } from "../rows/sidebarThreadRowDroppable.js";
 
 export const PINNED_THREAD_PARENT_KEY = "sidebar:pinned-threads";
-export const NEST_BAND_FRACTION = 0.5;
-export const NEST_BAND_ARMED_FRACTION = 0.8;
+export const NEST_BAND_FRACTION = 0.7;
+export const NEST_BAND_ARMED_FRACTION = 1;
 export const NEST_CANCEL_OFFSET_PX = 12;
-export const NEST_HOVER_DELAY_MS = 350;
+export const NEST_HOVER_DELAY_MS = 200;
 
 const SECTION_THREAD_DROPPABLE_MEASURING = {
   droppable: { strategy: MeasuringStrategy.WhileDragging, frequency: 16 },
@@ -108,6 +111,7 @@ interface UseSectionThreadDndArgs {
   groups?: boolean;
   pinnedReorderPending: boolean;
   pinnedThreads: readonly SidebarThread[];
+  pinnedRootItems?: readonly ProjectThreadItem[];
   pinnedRootNodes?: readonly ProjectThreadNode[];
   onReorderPinnedThread: (
     request: NeighborReorderRequest,
@@ -134,6 +138,38 @@ export type SectionThreadDropDecision =
       activeId: string;
       threadIds: string[];
       sectionId: string | null;
+      toParentKey: string;
+    }
+  | {
+      kind: "nest-group";
+      activeId: string;
+      threadIds: string[];
+      parentThreadId: string;
+      sectionId?: string | null;
+      unpinRootThreadIds?: string[];
+    }
+  | {
+      kind: "detach-group";
+      activeId: string;
+      threadIds: string[];
+      rootThreadIds: string[];
+      sectionId: string | null;
+      toParentKey: string;
+    }
+  | {
+      kind: "pin-group";
+      activeId: string;
+      rootThreadIds: string[];
+      detachRootThreadIds: string[];
+      pinRootThreadIds: string[];
+    }
+  | {
+      kind: "unpin-group";
+      activeId: string;
+      threadIds: string[];
+      rootThreadIds: string[];
+      sectionId: string | null;
+      move: boolean;
       toParentKey: string;
     }
   | {
@@ -186,7 +222,6 @@ interface ResolvedThreadRowInfo {
 
 interface ResolveThreadRowNestCollisionsArgs {
   collisions: Collision[];
-  draggedLeft?: number | null;
   droppableRects: ReadonlyMap<UniqueIdentifier, ClientRect>;
   pointerCoordinates: { x: number; y: number } | null;
   getBandFraction: (threadId: string) => number | null;
@@ -210,6 +245,7 @@ type RowDropState = SectionThreadNestTarget;
 
 interface CollectSectionThreadDndLookupOptions {
   groups?: boolean;
+  pinnedRootItems?: readonly ProjectThreadItem[];
 }
 
 function parseGroupSectionId(key: string): SidebarSectionId {
@@ -331,6 +367,9 @@ export function collectSectionThreadDndLookup(
     }
   };
 
+  if (options.pinnedRootItems) {
+    walk(options.pinnedRootItems, PINNED_THREAD_PARENT_KEY);
+  }
   walk(items, containerId);
   return lookup;
 }
@@ -362,7 +401,6 @@ export function isThreadWithinSubtree(
 
 export function resolveThreadRowNestCollisions({
   collisions,
-  draggedLeft = null,
   droppableRects,
   pointerCoordinates,
   getBandFraction,
@@ -403,7 +441,6 @@ export function resolveThreadRowNestCollisions({
           rowRect,
           pointerCoordinates,
           getBandFraction,
-          draggedLeft,
           retaining,
           retainedRect,
         );
@@ -434,7 +471,6 @@ function locateThreadRowPointer(
   rect: ClientRect | undefined,
   pointerCoordinates: { x: number; y: number } | null,
   getBandFraction: (threadId: string) => number | null,
-  draggedLeft: number | null,
   retainBelow: boolean,
   retainedRect: ClientRect | null,
 ): {
@@ -444,7 +480,8 @@ function locateThreadRowPointer(
 } | null {
   if (!rect || rect.height <= 0 || !pointerCoordinates) return null;
   const { x, y } = pointerCoordinates;
-  const withinX = x >= rect.left && x <= rect.left + rect.width;
+  const withinX =
+    x >= rect.left - NEST_CANCEL_OFFSET_PX && x <= rect.left + rect.width;
   const withinY = y >= rect.top && y <= rect.bottom;
   const withinRetainedRegion =
     retainBelow &&
@@ -457,8 +494,7 @@ function locateThreadRowPointer(
   const bandFraction = getBandFraction(threadId);
   const inDwellBand =
     bandFraction !== null && Math.abs(relativeY - 0.5) <= bandFraction / 2;
-  const movedLeft =
-    draggedLeft !== null && draggedLeft <= rect.left - NEST_CANCEL_OFFSET_PX;
+  const movedLeft = x < rect.left - NEST_CANCEL_OFFSET_PX;
   if (withinRetainedRegion) {
     return {
       threadId,
@@ -555,6 +591,84 @@ function resolveNestDecision(
   };
 }
 
+function resolveNestGroupDecision(
+  lookup: SectionThreadDndLookup,
+  activeId: string,
+  groupThreads: readonly SidebarThread[],
+  parentThreadId: string,
+  options: ResolveSectionThreadDropDecisionOptions,
+): SectionThreadDropDecision | null {
+  const parentThread = lookup.threadByItemId.get(parentThreadId);
+  const parentKey = lookup.parentKeyByItemId.get(parentThreadId);
+  if (!parentThread || !parentKey || options.groups) return null;
+  const groupThreadIds = new Set(groupThreads.map((thread) => thread.id));
+  if (groupThreadIds.has(parentThreadId)) {
+    return {
+      kind: "rejected",
+      activeId,
+      overThreadId: parentThreadId,
+      reason: "own-subtree",
+    };
+  }
+  const rootThreadIds = getGroupRootThreadIds(groupThreads);
+  if (rootThreadIds.length === 0) return null;
+  if (
+    rootThreadIds.every(
+      (threadId) =>
+        lookup.threadByItemId.get(threadId)?.parentThreadId === parentThreadId,
+    )
+  ) {
+    return {
+      kind: "rejected",
+      activeId,
+      overThreadId: parentThreadId,
+      reason: "already-child",
+    };
+  }
+  const parentPinned = parentKey === PINNED_THREAD_PARENT_KEY;
+  const sectionId = parentPinned
+    ? (parentThread.sectionId ?? null)
+    : (lookup.sectionIdByParentKey.get(parentKey) ?? null);
+  return {
+    kind: "nest-group",
+    activeId,
+    threadIds: rootThreadIds,
+    parentThreadId,
+    sectionId,
+    ...(rootThreadIds.some(
+      (threadId) => lookup.threadByItemId.get(threadId)?.pinnedAt !== null,
+    )
+      ? {
+          unpinRootThreadIds: rootThreadIds.filter(
+            (threadId) =>
+              lookup.threadByItemId.get(threadId)?.pinnedAt !== null,
+          ),
+        }
+      : {}),
+  };
+}
+
+function getGroupRootThreadIds(
+  groupThreads: readonly SidebarThread[],
+): string[] {
+  const groupThreadIds = new Set(groupThreads.map((thread) => thread.id));
+  return groupThreads
+    .filter(
+      (thread) =>
+        thread.parentThreadId === null ||
+        !groupThreadIds.has(thread.parentThreadId),
+    )
+    .map((thread) => thread.id);
+}
+
+function getGroupDragPreviewThread(
+  thread: SidebarThread,
+  groupThreads: readonly SidebarThread[],
+): SidebarThread & { displayTitle: string } {
+  const title = `${thread.environment?.name ?? thread.environment?.branchName ?? "Worktree group"} (${groupThreads.length} threads)`;
+  return { ...thread, title, titleFallback: title, displayTitle: title };
+}
+
 export function resolveSectionThreadDropDecision(
   lookup: SectionThreadDndLookup,
   activeId: string,
@@ -569,24 +683,85 @@ export function resolveSectionThreadDropDecision(
 
   const groupThreads = lookup.groupThreadsByItemId.get(activeId);
   if (groupThreads) {
-    if (options.groups) return null;
     const overThreadId =
       overId === null ? null : parseSidebarThreadRowDroppableId(overId);
+    if (overThreadId !== null) {
+      return resolveNestGroupDecision(
+        lookup,
+        activeId,
+        groupThreads,
+        overThreadId,
+        options,
+      );
+    }
+    if (overId === activeId && projectedNestParentId !== null) {
+      return resolveNestGroupDecision(
+        lookup,
+        activeId,
+        groupThreads,
+        projectedNestParentId,
+        options,
+      );
+    }
+    if (options.groups) return null;
     const toParentKey =
       overId === activeId
         ? projectedParentKey
         : resolveSectionThreadDropParentKey(lookup, overThreadId ?? overId);
-    if (
-      !toParentKey ||
-      toParentKey === fromParentKey ||
-      !lookup.sectionIdByParentKey.has(toParentKey)
-    )
-      return null;
+    if (!toParentKey) return null;
+    if (toParentKey === PINNED_THREAD_PARENT_KEY) {
+      const rootThreadIds = getGroupRootThreadIds(groupThreads);
+      const detachRootThreadIds = rootThreadIds.filter(
+        (threadId) =>
+          lookup.threadByItemId.get(threadId)?.parentThreadId !== null,
+      );
+      const pinRootThreadIds = rootThreadIds.filter(
+        (threadId) => lookup.threadByItemId.get(threadId)?.pinnedAt === null,
+      );
+      if (detachRootThreadIds.length === 0 && pinRootThreadIds.length === 0) {
+        return null;
+      }
+      return {
+        kind: "pin-group",
+        activeId,
+        rootThreadIds,
+        detachRootThreadIds,
+        pinRootThreadIds,
+      };
+    }
+    if (!lookup.sectionIdByParentKey.has(toParentKey)) return null;
+    const sectionId = lookup.sectionIdByParentKey.get(toParentKey) ?? null;
+    if (fromParentKey === PINNED_THREAD_PARENT_KEY) {
+      return {
+        kind: "unpin-group",
+        activeId,
+        threadIds: groupThreads.map((thread) => thread.id),
+        rootThreadIds: getGroupRootThreadIds(groupThreads),
+        sectionId,
+        move: groupThreads.some((thread) => thread.sectionId !== sectionId),
+        toParentKey,
+      };
+    }
+    const rootThreadIds = getGroupRootThreadIds(groupThreads).filter(
+      (threadId) =>
+        lookup.threadByItemId.get(threadId)?.parentThreadId !== null,
+    );
+    if (rootThreadIds.length > 0) {
+      return {
+        kind: "detach-group",
+        activeId,
+        threadIds: groupThreads.map((thread) => thread.id),
+        rootThreadIds,
+        sectionId,
+        toParentKey,
+      };
+    }
+    if (toParentKey === fromParentKey) return null;
     return {
       kind: "move-group",
       activeId,
       threadIds: groupThreads.map((thread) => thread.id),
-      sectionId: lookup.sectionIdByParentKey.get(toParentKey) ?? null,
+      sectionId,
       toParentKey,
     };
   }
@@ -702,7 +877,7 @@ function getEventIds(event: DragOverEvent | DragEndEvent) {
 function resolveRowDropState(
   decision: SectionThreadDropDecision | null,
 ): RowDropState | null {
-  if (decision?.kind === "nest") {
+  if (decision?.kind === "nest" || decision?.kind === "nest-group") {
     return { threadId: decision.parentThreadId, state: "valid" };
   }
   if (decision?.kind === "rejected") {
@@ -733,8 +908,11 @@ function resolveTargetParentKey(
 ): string | null {
   switch (decision?.kind) {
     case "pin":
+    case "pin-group":
       return PINNED_THREAD_PARENT_KEY;
     case "move-group":
+    case "detach-group":
+    case "unpin-group":
     case "move":
     case "detach":
     case "unpin":
@@ -802,6 +980,16 @@ function hasDropDecisionLanded(
       return (
         lookup.parentKeyByItemId.get(decision.activeId) === decision.toParentKey
       );
+    case "detach-group":
+      return (
+        decision.threadIds.every(
+          (threadId) =>
+            lookup.parentKeyByItemId.get(threadId) === decision.toParentKey,
+        ) &&
+        decision.rootThreadIds.every(
+          (threadId) => !lookup.nestParentIdByItemId.has(threadId),
+        )
+      );
     case "detach":
       return (
         lookup.parentKeyByItemId.get(decision.activeId) ===
@@ -813,10 +1001,25 @@ function hasDropDecisionLanded(
         lookup.nestParentIdByItemId.get(decision.activeId) ===
         decision.parentThreadId
       );
+    case "nest-group":
+      return decision.threadIds.every(
+        (threadId) =>
+          lookup.nestParentIdByItemId.get(threadId) === decision.parentThreadId,
+      );
     case "pin":
       return (
         lookup.parentKeyByItemId.get(decision.activeId) ===
         PINNED_THREAD_PARENT_KEY
+      );
+    case "pin-group":
+      return decision.rootThreadIds.every(
+        (threadId) =>
+          lookup.parentKeyByItemId.get(threadId) === PINNED_THREAD_PARENT_KEY,
+      );
+    case "unpin-group":
+      return decision.threadIds.every(
+        (threadId) =>
+          lookup.parentKeyByItemId.get(threadId) === decision.toParentKey,
       );
     case "unpin":
       return (
@@ -839,6 +1042,7 @@ export function useSectionThreadDnd({
   groups = false,
   pinnedReorderPending,
   pinnedThreads,
+  pinnedRootItems,
   pinnedRootNodes,
   onReorderPinnedThread,
 }: UseSectionThreadDndArgs): SectionThreadDndState | null {
@@ -849,9 +1053,16 @@ export function useSectionThreadDnd({
         containerId,
         pinnedThreads,
         pinnedRootNodes,
-        { groups },
+        { groups, pinnedRootItems },
       ),
-    [containerId, groups, pinnedRootNodes, pinnedThreads, rootItems],
+    [
+      containerId,
+      groups,
+      pinnedRootItems,
+      pinnedRootNodes,
+      pinnedThreads,
+      rootItems,
+    ],
   );
   const decisionOptions = useMemo(() => ({ groups }), [groups]);
   const topLevelSectionIds = useMemo(
@@ -908,12 +1119,7 @@ export function useSectionThreadDnd({
   const getNestBandFraction = useCallback(
     (threadId: string): number | null => {
       const activeId = activeIdRef.current;
-      if (
-        activeId === null ||
-        threadId === activeId ||
-        lookup.groupThreadsByItemId.has(activeId)
-      )
-        return null;
+      if (activeId === null || threadId === activeId) return null;
       if (lookup.itemKindById.get(threadId) !== "thread") return null;
       const armed = armedNestThreadIdRef.current === threadId;
       if (coarsePointerRef.current) return 1;
@@ -990,7 +1196,6 @@ export function useSectionThreadDnd({
       const retainedNestTarget = retainedNestTargetRef.current;
       const collisions = resolveThreadRowNestCollisions({
         collisions: reorderCollisions,
-        draggedLeft: args.collisionRect.left,
         droppableRects: args.droppableRects,
         pointerCoordinates: args.pointerCoordinates,
         getBandFraction: getNestBandFraction,
@@ -1015,7 +1220,8 @@ export function useSectionThreadDnd({
     ],
   );
   const sdk = useSdk();
-  const { handleDragEnd: handlePinnedDragEnd, itemIds: pinnedItemIds } =
+  const sidebarActions = experimental_useSidebarThreadActions();
+  const { handleDragEnd: handlePinnedDragEnd } =
     useNeighborReorderSortable({
       disabled: pinnedReorderPending || pinnedThreads.length < 2,
       getId: (thread: SidebarThread) => thread.id,
@@ -1093,10 +1299,7 @@ export function useSectionThreadDnd({
         : undefined;
       setActiveThread(
         thread && groupThreads
-          ? {
-              ...thread,
-              title: `${thread.environment?.name ?? thread.environment?.branchName ?? "Worktree group"} (${groupThreads.length} threads)`,
-            }
+          ? getGroupDragPreviewThread(thread, groupThreads)
           : thread,
       );
       setDragOverParentKey(null);
@@ -1220,13 +1423,19 @@ export function useSectionThreadDnd({
           sectionId: decision.sectionId,
         });
       const request = decision.unpin
-        ? sdk.threads.unpin({ threadId: decision.activeId }).then(applyNest)
-        : applyNest();
-      void request
-        .catch(() => toast.error("Failed to move thread."))
-        .finally(onSettled);
+        ? sidebarActions.setPinned(decision.activeId, false).then(() =>
+            applyNest().catch((error) => {
+              toast.error("Failed to move thread.");
+              throw error;
+            }),
+          )
+        : applyNest().catch((error) => {
+            toast.error("Failed to move thread.");
+            throw error;
+          });
+      void request.catch(() => undefined).finally(onSettled);
     },
-    [sdk],
+    [sdk, sidebarActions],
   );
 
   const handleDragEnd = useCallback(
@@ -1270,9 +1479,14 @@ export function useSectionThreadDnd({
         clearProjectedDrag();
         return;
       }
-      const settle = (request: Promise<unknown>, failureMessage: string) => {
+      const settle = (
+        request: Promise<unknown>,
+        failureMessage: string | null,
+      ) => {
         void request
-          .catch(() => toast.error(failureMessage))
+          .catch(() => {
+            if (failureMessage !== null) toast.error(failureMessage);
+          })
           .finally(clearProjectedDrag);
       };
       switch (decision.kind) {
@@ -1289,6 +1503,102 @@ export function useSectionThreadDnd({
             })
             .finally(clearProjectedDrag);
           break;
+        case "detach-group": {
+          const rootThreadIds = new Set(decision.rootThreadIds);
+          void Promise.allSettled(
+            decision.threadIds.map((threadId) =>
+              rootThreadIds.has(threadId)
+                ? sdk.threads.update({
+                    threadId,
+                    parentThreadId: null,
+                    sectionId: decision.sectionId,
+                  })
+                : sdk.threads.update({
+                    threadId,
+                    sectionId: decision.sectionId,
+                  }),
+            ),
+          )
+            .then((results) => {
+              if (results.some((result) => result.status === "rejected")) {
+                toast.error("Failed to move threads.");
+              }
+            })
+            .finally(clearProjectedDrag);
+          break;
+        }
+        case "nest-group":
+          void Promise.all(
+            (decision.unpinRootThreadIds ?? []).map((threadId) =>
+              sidebarActions.setPinned(threadId, false),
+            ),
+          )
+            .then(() =>
+              Promise.allSettled(
+                decision.threadIds.map((threadId) =>
+                  sdk.threads.update({
+                    threadId,
+                    parentThreadId: decision.parentThreadId,
+                    sectionId: decision.sectionId,
+                  }),
+                ),
+              ),
+            )
+            .then((results) => {
+              if (results.some((result) => result.status === "rejected")) {
+                toast.error("Failed to move threads.");
+              }
+            })
+            .catch(() => undefined)
+            .finally(clearProjectedDrag);
+          break;
+        case "pin-group": {
+          const detachRequest = Promise.all(
+            decision.detachRootThreadIds.map((threadId) =>
+              sdk.threads.update({ threadId, parentThreadId: null }),
+            ),
+          ).catch((error) => {
+            toast.error("Failed to pin worktree group.");
+            throw error;
+          });
+          settle(
+            detachRequest.then(() =>
+              Promise.all(
+                decision.pinRootThreadIds.map((threadId) =>
+                  sidebarActions.setPinned(threadId, true),
+                ),
+              ),
+            ),
+            null,
+          );
+          break;
+        }
+        case "unpin-group": {
+          const unpinRequest = Promise.all(
+            decision.rootThreadIds.map((threadId) =>
+              sidebarActions.setPinned(threadId, false),
+            ),
+          );
+          settle(
+            decision.move
+              ? unpinRequest.then(() =>
+                  Promise.all(
+                    decision.threadIds.map((threadId) =>
+                      sdk.threads.update({
+                        threadId,
+                        sectionId: decision.sectionId,
+                      }),
+                    ),
+                  ).catch((error) => {
+                    toast.error("Failed to unpin and move worktree group.");
+                    throw error;
+                  }),
+                )
+              : unpinRequest,
+            null,
+          );
+          break;
+        }
         case "move":
           settle(
             sdk.threads.update({
@@ -1316,7 +1626,7 @@ export function useSectionThreadDnd({
             ? buildPinInsertRequest(lookup, decision.activeId, reorderTarget)
             : null;
           const pin = () =>
-            sdk.threads.pin({ threadId: decision.activeId }).then(() => {
+            sidebarActions.setPinned(decision.activeId, true).then(() => {
               if (insertRequest) {
                 onReorderPinnedThread(insertRequest, {
                   onSettled: () => undefined,
@@ -1327,26 +1637,33 @@ export function useSectionThreadDnd({
             decision.detach
               ? sdk.threads
                   .update({ threadId: decision.activeId, parentThreadId: null })
+                  .catch((error) => {
+                    toast.error("Failed to pin thread.");
+                    throw error;
+                  })
                   .then(pin)
               : pin(),
-            "Failed to pin thread.",
+            null,
           );
           break;
         }
         case "unpin": {
-          const unpin = sdk.threads.unpin({ threadId: decision.activeId });
+          const unpin = sidebarActions.setPinned(decision.activeId, false);
           settle(
             decision.move
               ? unpin.then(() =>
-                  sdk.threads.update({
-                    threadId: decision.activeId,
-                    sectionId: decision.sectionId,
-                  }),
+                  sdk.threads
+                    .update({
+                      threadId: decision.activeId,
+                      sectionId: decision.sectionId,
+                    })
+                    .catch((error) => {
+                      toast.error("Failed to unpin and move thread.");
+                      throw error;
+                    }),
                 )
               : unpin,
-            decision.move
-              ? "Failed to unpin and move thread."
-              : "Failed to unpin thread.",
+            null,
           );
           break;
         }
@@ -1376,6 +1693,7 @@ export function useSectionThreadDnd({
       projectedNestParentId,
       reorderTarget,
       sdk,
+      sidebarActions,
       topLevelSectionIds,
       topLevelSectionOrder,
     ],
@@ -1417,7 +1735,8 @@ export function useSectionThreadDnd({
     nestTarget: dropDecisionLanded ? null : rowDrop,
     nestPreviewBeforeKey: null,
     reorderTarget: dropDecisionLanded ? null : reorderTarget,
-    pinnedItemIds,
+    pinnedItemIds:
+      lookup.itemIdsByParentKey.get(PINNED_THREAD_PARENT_KEY) ?? [],
     pinnedReorderPending,
   };
 }

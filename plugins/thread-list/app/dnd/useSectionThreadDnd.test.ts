@@ -555,16 +555,11 @@ describe("thread row nest collisions", () => {
   const rowCollision = { id: rowId("parent-a") };
   const groupCollision = { id: "parent-a" };
   const droppableRects = new Map([[rowId("parent-a"), rect]]);
-  const resolve = (
-    y: number,
-    band: number | null,
-    draggedLeft: number | null = null,
-  ) =>
+  const resolve = (y: number, band: number | null, pointerX = 20) =>
     resolveThreadRowNestCollisions({
       collisions: [rowCollision, groupCollision],
-      draggedLeft,
       droppableRects,
-      pointerCoordinates: { x: 20, y },
+      pointerCoordinates: { x: pointerX, y },
       getBandFraction: () => band,
     });
 
@@ -589,7 +584,6 @@ describe("thread row nest collisions", () => {
     const candidates: unknown[] = [];
     const collisions = resolveThreadRowNestCollisions({
       collisions: [rowCollision, groupCollision],
-      draggedLeft: 48,
       droppableRects,
       pointerCoordinates: { x: 20, y: 114 },
       getBandFraction: () => NEST_BAND_FRACTION,
@@ -606,26 +600,25 @@ describe("thread row nest collisions", () => {
   it("retains an armed parent through its projected child row", () => {
     const resolveRetained = (
       y: number,
-      draggedLeft: number,
+      pointerX: number,
       retainedRect?: typeof rect,
     ) =>
       resolveThreadRowNestCollisions({
         collisions: [groupCollision],
-        draggedLeft,
         droppableRects,
-        pointerCoordinates: { x: 20, y },
+        pointerCoordinates: { x: pointerX, y },
         getBandFraction: () => NEST_BAND_ARMED_FRACTION,
         retainedRect,
         retainedThreadId: "parent-a",
       });
 
-    expect(resolveRetained(140, 48)).toEqual([rowCollision, groupCollision]);
-    expect(resolveRetained(140, -NEST_CANCEL_OFFSET_PX)).toEqual([
+    expect(resolveRetained(140, 20)).toEqual([rowCollision, groupCollision]);
+    expect(resolveRetained(140, -NEST_CANCEL_OFFSET_PX - 1)).toEqual([
       groupCollision,
     ]);
-    expect(resolveRetained(157, 48)).toEqual([groupCollision]);
+    expect(resolveRetained(157, 20)).toEqual([groupCollision]);
     expect(
-      resolveRetained(170, 48, {
+      resolveRetained(170, 20, {
         ...rect,
         top: 158,
         bottom: 186,
@@ -633,9 +626,9 @@ describe("thread row nest collisions", () => {
     ).toEqual([rowCollision, groupCollision]);
   });
 
-  it("cancels parenting after moving twelve pixels left", () => {
+  it("cancels parenting after the pointer moves past the left tolerance", () => {
     expect(
-      resolve(114, NEST_BAND_ARMED_FRACTION, -NEST_CANCEL_OFFSET_PX),
+      resolve(114, NEST_BAND_ARMED_FRACTION, -NEST_CANCEL_OFFSET_PX - 1),
     ).toEqual([groupCollision]);
   });
 
@@ -734,6 +727,7 @@ describe("worktree group section dragging", () => {
             }),
             sectionId: "b",
           }),
+          createThread({ id: "outside", createdAt: 11 }),
         ],
         undefined,
         [
@@ -744,6 +738,94 @@ describe("worktree group section dragging", () => {
         true,
       ),
       CHRONOLOGICAL_CONTAINER_ID,
+    );
+  }
+
+  function nestedGroupLookup() {
+    return collectSectionThreadDndLookup(
+      buildSectionThreadList(
+        [
+          createThread({ id: "outside", sectionId: "a", createdAt: 11 }),
+          createThread({
+            id: "first",
+            parentThreadId: "outside",
+            environment: makeSidebarEnvironment({
+              id: "env",
+              isWorktree: true,
+            }),
+            sectionId: "a",
+            createdAt: 10,
+          }),
+          createThread({
+            id: "second",
+            parentThreadId: "outside",
+            environment: makeSidebarEnvironment({
+              id: "env",
+              isWorktree: true,
+            }),
+            sectionId: "a",
+            createdAt: 9,
+          }),
+          createThread({
+            id: "child",
+            parentThreadId: "first",
+            environment: makeSidebarEnvironment({
+              id: "env",
+              isWorktree: true,
+            }),
+            sectionId: "a",
+          }),
+        ],
+        undefined,
+        [
+          { id: "a", name: "A" },
+          { id: "b", name: "B" },
+        ],
+        new Set(),
+        true,
+      ),
+      CHRONOLOGICAL_CONTAINER_ID,
+    );
+  }
+
+  function pinnedGroupLookup() {
+    const environment = makeSidebarEnvironment({
+      id: "env",
+      isWorktree: true,
+    });
+    const pinnedRoots = [
+      createThread({
+        id: "first",
+        environment,
+        pinnedAt: 10,
+        sectionId: "a",
+        createdAt: 10,
+      }),
+      createThread({
+        id: "second",
+        environment,
+        pinnedAt: 9,
+        sectionId: "a",
+        createdAt: 9,
+      }),
+    ];
+    const pinnedState = buildPinnedSidebarState({
+      groupEnvironmentThreads: true,
+      threads: pinnedRoots,
+    });
+    return collectSectionThreadDndLookup(
+      buildSectionThreadList(
+        [createThread({ id: "outside", sectionId: "b", createdAt: 11 })],
+        undefined,
+        [
+          { id: "a", name: "A" },
+          { id: "b", name: "B" },
+        ],
+      ),
+      CHRONOLOGICAL_CONTAINER_ID,
+      pinnedRoots,
+      pinnedState.rootNodes,
+      { pinnedRootItems: pinnedState.rootItems },
     );
   }
 
@@ -759,6 +841,60 @@ describe("worktree group section dragging", () => {
     expect(
       decision?.kind === "move-group" && decision.threadIds.sort(),
     ).toEqual(["child", "first", "second"]);
+  });
+
+  it("parents the roots of a worktree group without flattening descendants", () => {
+    const lookup = groupLookup();
+    const activeId = [...lookup.groupThreadsByItemId.keys()][0];
+
+    expect(
+      resolveSectionThreadDropDecision(
+        lookup,
+        activeId,
+        getSidebarThreadRowDroppableId("outside"),
+      ),
+    ).toEqual({
+      kind: "nest-group",
+      activeId,
+      threadIds: ["first", "second"],
+      parentThreadId: "outside",
+      sectionId: null,
+    });
+  });
+
+  it("unparents worktree roots and moves the whole group to a section", () => {
+    const lookup = nestedGroupLookup();
+    const activeId = [...lookup.groupThreadsByItemId.keys()][0];
+    const sectionBKey = lookup.sectionParentKeyBySectionId.get("section:b");
+    const decision = resolveSectionThreadDropDecision(
+      lookup,
+      activeId,
+      "section:b",
+    );
+
+    expect(decision).toMatchObject({
+      kind: "detach-group",
+      activeId,
+      rootThreadIds: ["first", "second"],
+      sectionId: "b",
+      toParentKey: sectionBKey,
+    });
+    expect(
+      decision?.kind === "detach-group" && decision.threadIds.sort(),
+    ).toEqual(["child", "first", "second"]);
+  });
+
+  it("unparents a worktree group when dropped back into its current section", () => {
+    const lookup = nestedGroupLookup();
+    const activeId = [...lookup.groupThreadsByItemId.keys()][0];
+
+    expect(
+      resolveSectionThreadDropDecision(lookup, activeId, "section:a"),
+    ).toMatchObject({
+      kind: "detach-group",
+      rootThreadIds: ["first", "second"],
+      sectionId: "a",
+    });
   });
 
   it("moves the first and other group members independently", () => {
@@ -790,7 +926,7 @@ describe("worktree group section dragging", () => {
     ).toMatchObject({ kind: "pin", detach: true });
   });
 
-  it("allows moving back to Threads and ignores same-section and pinned drops", () => {
+  it("allows moving back to Threads, pinning the group, and ignores same-section drops", () => {
     const lookup = groupLookup();
     const activeId = [...lookup.groupThreadsByItemId.keys()][0];
     expect(
@@ -801,7 +937,13 @@ describe("worktree group section dragging", () => {
     ).toBeNull();
     expect(
       resolveSectionThreadDropDecision(lookup, activeId, "pinned"),
-    ).toBeNull();
+    ).toEqual({
+      kind: "pin-group",
+      activeId,
+      rootThreadIds: ["first", "second"],
+      detachRootThreadIds: [],
+      pinRootThreadIds: ["first", "second"],
+    });
     expect(
       resolveSectionThreadDropDecision(
         lookup,
@@ -812,5 +954,55 @@ describe("worktree group section dragging", () => {
         { groups: true },
       ),
     ).toBeNull();
+  });
+
+  it("unparents and pins the roots of a nested worktree group", () => {
+    const lookup = nestedGroupLookup();
+    const activeId = [...lookup.groupThreadsByItemId.keys()][0];
+
+    expect(
+      resolveSectionThreadDropDecision(lookup, activeId, "pinned"),
+    ).toEqual({
+      kind: "pin-group",
+      activeId,
+      rootThreadIds: ["first", "second"],
+      detachRootThreadIds: ["first", "second"],
+      pinRootThreadIds: ["first", "second"],
+    });
+  });
+
+  it("unpins a pinned environment group when it moves to a section", () => {
+    const lookup = pinnedGroupLookup();
+    const activeId = [...lookup.groupThreadsByItemId.keys()][0];
+
+    expect(
+      resolveSectionThreadDropDecision(lookup, activeId, "section:b"),
+    ).toMatchObject({
+      kind: "unpin-group",
+      activeId,
+      threadIds: ["first", "second"],
+      rootThreadIds: ["first", "second"],
+      sectionId: "b",
+      move: true,
+    });
+  });
+
+  it("unpins a pinned environment group when it nests under a thread", () => {
+    const lookup = pinnedGroupLookup();
+    const activeId = [...lookup.groupThreadsByItemId.keys()][0];
+
+    expect(
+      resolveSectionThreadDropDecision(
+        lookup,
+        activeId,
+        getSidebarThreadRowDroppableId("outside"),
+      ),
+    ).toMatchObject({
+      kind: "nest-group",
+      activeId,
+      threadIds: ["first", "second"],
+      parentThreadId: "outside",
+      unpinRootThreadIds: ["first", "second"],
+    });
   });
 });
