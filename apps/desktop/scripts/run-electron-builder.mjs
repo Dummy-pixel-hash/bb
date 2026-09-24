@@ -184,6 +184,11 @@ function resolveElectronBuilderConfig(baseConfig, env) {
     executableName: releaseConfig.linuxExecutableName,
     icon: "assets/" + releaseConfig.iconFileName,
   };
+  config.win = {
+    ...config.win,
+    executableName: releaseConfig.winExecutableName,
+    icon: "assets/" + releaseConfig.iconFileName,
+  };
   config.appId = releaseConfig.appId;
   config.artifactName = releaseConfig.artifactName;
   config.productName = releaseConfig.applicationName;
@@ -270,10 +275,13 @@ async function main() {
   }
 
   if (
-    electronBuilderArgs.includes("--linux") &&
+    (electronBuilderArgs.includes("--linux") ||
+      electronBuilderArgs.includes("--win") ||
+      electronBuilderArgs.includes("-w") ||
+      electronBuilderArgs.includes("--windows")) &&
     !electronBuilderArgs.includes("--mac")
   ) {
-    console.log("macOS signing is not applicable for Linux-only builds.");
+    console.log("macOS signing is not applicable for non-macOS builds.");
   } else {
     logSigningPlan(signingPlan);
   }

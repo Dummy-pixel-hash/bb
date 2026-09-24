@@ -10,6 +10,25 @@ export async function resolvePackagedAppBinary({
   if (platform === "linux") {
     return join(releaseDir, "linux-unpacked", executableName);
   }
+  if (platform === "win32") {
+    const entries = await readdir(releaseDir, { withFileTypes: true });
+    const winDirectories = entries
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith("win"))
+      .map((entry) => entry.name)
+      .sort();
+
+    for (const directory of winDirectories) {
+      const appBinary = join(releaseDir, directory, `${executableName}.exe`);
+      try {
+        await access(appBinary);
+        return appBinary;
+      } catch {
+        continue;
+      }
+    }
+
+    return join(releaseDir, "win-unpacked", `${executableName}.exe`);
+  }
   if (platform !== "darwin") {
     throw new Error(`Unsupported packaged desktop platform: ${platform}`);
   }

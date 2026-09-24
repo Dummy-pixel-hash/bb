@@ -64,6 +64,27 @@ const macConfigSchema = z
   })
   .passthrough();
 
+const winConfigSchema = z
+  .object({
+    executableName: z.enum(["bb", "bb-nightly"]).optional(),
+    icon: z.string().min(1),
+    target: z.tuple([
+      z
+        .object({
+          arch: z.tuple([z.literal("arm64")]),
+          target: z.literal("nsis"),
+        })
+        .passthrough(),
+      z
+        .object({
+          arch: z.tuple([z.literal("arm64")]),
+          target: z.literal("zip"),
+        })
+        .passthrough(),
+    ]),
+  })
+  .passthrough();
+
 const linuxConfigSchema = z
   .object({
     category: z.literal("Development"),
@@ -105,6 +126,7 @@ const electronBuilderConfigSchema = z
     files: z.array(electronBuilderFilePatternSchema),
     linux: linuxConfigSchema,
     mac: macConfigSchema,
+    win: winConfigSchema.optional(),
     npmRebuild: z.literal(false),
     appId: z.string().min(1),
     artifactName: z.string().min(1),
@@ -556,6 +578,22 @@ describe("electron-builder signing config", () => {
     await expect(
       access(resolve(desktopPackageRoot, config.linux.icon)),
     ).resolves.toBeUndefined();
+  });
+
+  it("packages Windows artifacts for arm64 NSIS and zip", async () => {
+    const configText = await readFile(
+      resolve(desktopPackageRoot, "electron-builder.config.json"),
+      "utf8",
+    );
+    const config = electronBuilderConfigSchema.parse(JSON.parse(configText));
+
+    expect(config.win).toMatchObject({
+      icon: "assets/icon.png",
+      target: [
+        { arch: ["arm64"], target: "nsis" },
+        { arch: ["arm64"], target: "zip" },
+      ],
+    });
   });
 
   it("grants audio input to the signed app and helper processes", async () => {

@@ -289,7 +289,10 @@ async function afterPack(context) {
   const arch = resolveArchName(context);
   const platform = context.electronPlatformName ?? process.platform;
   if (platform !== process.platform || arch !== process.arch) {
-    throw new Error("Packaged npm verification requires a native target host");
+    console.warn(
+      `Skipping packaged npm verification: non-native target host (${platform} ${arch} on ${process.platform} ${process.arch})`,
+    );
+    return;
   }
   await preparePackagedNativeModules(context.appOutDir, {
     arch,
@@ -307,6 +310,8 @@ async function afterPack(context) {
           "MacOS",
           productName,
         )
+      : platform === "win32"
+      ? path.join(context.appOutDir, `${context.packager.executableName}.exe`)
       : path.join(context.appOutDir, context.packager.executableName);
   await smokePackagedNpm(appBinary);
 }
