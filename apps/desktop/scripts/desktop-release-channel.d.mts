@@ -1,9 +1,10 @@
 export type DesktopReleaseChannel = "latest" | "nightly";
-export type DesktopBuildPlatform = "macos" | "linux";
+export type DesktopBuildPlatform = "macos" | "linux" | "windows";
 
 export interface DesktopUpdateMetadataFileNames {
   linux: "latest-linux.yml" | "nightly-linux.yml";
   macos: "latest-mac.yml" | "nightly-mac.yml";
+  windows: "latest-win.yml" | "nightly-win.yml";
 }
 
 export interface DesktopReleaseConfig {
@@ -12,6 +13,7 @@ export interface DesktopReleaseConfig {
   artifactName: string;
   iconFileName: "icon.png" | "icon-nightly.png";
   linuxExecutableName: "bb" | "bb-nightly";
+  winExecutableName: "bb" | "bb-nightly";
   macIconPath: "assets/icon.icns" | "assets/icon-nightly.icns";
   releaseTag: "desktop-latest" | "desktop-nightly";
   updateMetadataFileNames: DesktopUpdateMetadataFileNames;

@@ -21,9 +21,12 @@ export function resolveDesktopBuildPlatform(nodePlatform) {
   if (nodePlatform === "linux") {
     return "linux";
   }
+  if (nodePlatform === "win32") {
+    return "windows";
+  }
 
   throw new Error(
-    `Desktop builds support darwin and linux only, got ${nodePlatform}.`,
+    `Desktop builds support darwin, linux, and win32 only, got ${nodePlatform}.`,
   );
 }
 
@@ -34,14 +37,14 @@ export function createDesktopReleaseConfig(channel) {
       applicationName: "bb Nightly",
       artifactName: "bb-nightly-${version}-${arch}.${ext}",
       iconFileName: "icon-nightly.png",
-      // The Linux binary name must differ from stable so both channels can be
-      // installed at once without one shadowing the other on PATH.
       linuxExecutableName: "bb-nightly",
+      winExecutableName: "bb-nightly",
       macIconPath: "assets/icon-nightly.icns",
       releaseTag: "desktop-nightly",
       updateMetadataFileNames: {
         linux: "nightly-linux.yml",
         macos: "nightly-mac.yml",
+        windows: "nightly-win.yml",
       },
     };
   }
@@ -52,11 +55,13 @@ export function createDesktopReleaseConfig(channel) {
     artifactName: "${productName}-${version}-${arch}.${ext}",
     iconFileName: "icon.png",
     linuxExecutableName: "bb",
+    winExecutableName: "bb",
     macIconPath: "assets/icon.icns",
     releaseTag: "desktop-latest",
     updateMetadataFileNames: {
       linux: "latest-linux.yml",
       macos: "latest-mac.yml",
+      windows: "latest-win.yml",
     },
   };
 }
